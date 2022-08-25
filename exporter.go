@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -20,9 +20,14 @@ type instanaHttpClient interface {
 }
 
 type InstanaExporter struct {
-	client      instanaHttpClient
+	// An interface that implements Do. It's supposed to use http.Client, but the interface is used for tests.
+	client instanaHttpClient
+	// The serverless acceptor endpoint URL.
 	endpointUrl string
-	agentKey    string
+	// The agent key.
+	agentKey string
+	// An error should be set here in case the ExportSpans method returns an error.
+	err error
 }
 
 func New() *InstanaExporter {
@@ -44,7 +49,7 @@ func New() *InstanaExporter {
 // calls this function will not implement any retry logic. All errors
 // returned by this function are considered unrecoverable and will be
 // reported to a configured error Handler.
-func (e InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+func (e *InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	// handle lock?
 	// handle exporter stopped
 
@@ -52,24 +57,32 @@ func (e InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadO
 		return nil
 	}
 
-	iss := make([]Span, len(spans))
+	if e.endpointUrl == "" {
+		err := errors.New("the endpoint URL cannot be empty")
+		e.err = err
 
-	for _, sp := range spans {
-		// TODO: proper From
-		instanaSpan, err := convertSpan(FromS{}, sp, "my_service")
-
-		if err == nil {
-			iss = append(iss, instanaSpan)
-		} else {
-			// log error, but continue to the next span
-		}
+		return err
 	}
 
-	bundle := Bundle{
-		Spans: iss,
+	if e.agentKey == "" {
+		err := errors.New("the agent key cannot be empty")
+		e.err = err
+
+		return err
 	}
 
-	jsonData, err := json.MarshalIndent(bundle, "", "  ")
+	instanaSpans := make([]span, len(spans))
+
+	for idx, sp := range spans {
+		instanaSpan := convertSpan(sp, "my_service")
+		instanaSpans[idx] = instanaSpan
+	}
+
+	bundle := bundle{
+		Spans: instanaSpans,
+	}
+
+	jsonData, err := json.Marshal(bundle)
 
 	if err != nil {
 		return err
@@ -79,7 +92,8 @@ func (e InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadO
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonData))
 	if err != nil {
-		fmt.Println("error setting http request", err)
+		e.err = err
+		return fmt.Errorf("error setting http request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -92,17 +106,19 @@ func (e InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadO
 	resp, err := e.client.Do(req)
 
 	if err != nil {
+		e.err = err
 		return fmt.Errorf("failed to make an HTTP request: %w", err)
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 		// Request is successful.
-		log.Println(">>> SPAN", string(jsonData))
 		return nil
 	}
 
-	log.Println("HTTP request failed", resp)
-	return nil
+	err = fmt.Errorf("failed to send spans to the backend. error: %s", resp.Status)
+	e.err = err
+
+	return err
 }
 
 // Shutdown notifies the exporter of a pending halt to operations. The
@@ -110,6 +126,5 @@ func (e InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadO
 // requires while honoring all timeouts and cancellations contained in
 // the passed context.
 func (e InstanaExporter) Shutdown(ctx context.Context) error {
-	// log.Println("SHUTDOWN WAS CALLED")
 	return nil
 }
