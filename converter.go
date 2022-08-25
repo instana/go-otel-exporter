@@ -2,7 +2,8 @@ package instana
 
 import (
 	"encoding/hex"
-	"fmt"
+	"os"
+	"strconv"
 
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -25,43 +26,19 @@ const (
 	INSTANA_DATA_ERROR_DETAIL = "error_detail"
 )
 
-// TODO: refactor me!
+// convertTraceId converts a [16]byte trace id into a hex string
 func convertTraceId(traceId trace.TraceID) string {
-	const byteLength = 16
-
-	bytes := [16]byte(traceId)
-	traceBytes := make([]byte, 0)
-
-	for (len(traceBytes) + len(bytes)) < byteLength {
-		traceBytes = append(traceBytes, 0)
-	}
-
-	for _, byte := range bytes {
-		traceBytes = append(traceBytes, byte)
-	}
-
-	return hex.EncodeToString(traceBytes)
+	return hex.EncodeToString(traceId[:])
 }
 
-// TODO: refactor me!
+// convertTraceId converts a [8]byte span id into a hex string
 func convertSpanId(spanId trace.SpanID) string {
-	const byteLength = 8
-
-	bytes := [8]byte(spanId)
-	spanBytes := make([]byte, 0)
-
-	for (len(spanBytes) + len(bytes)) < byteLength {
-		spanBytes = append(spanBytes, 0)
-	}
-
-	for _, byte := range bytes {
-		spanBytes = append(spanBytes, byte)
-	}
-
-	return hex.EncodeToString(spanBytes)
+	return hex.EncodeToString(spanId[:])
 }
 
-func oTelKindToInstanaKind(otelKind trace.SpanKind) (string, bool) {
+// convertKind converts an int based OTel span into a string based Instana span.
+// It returns the span kind as a string and a boolean indicating if it's an entry span
+func convertKind(otelKind trace.SpanKind) (string, bool) {
 	switch otelKind {
 	case trace.SpanKindServer:
 		return INSTANA_SPAN_KIND_SERVER, true
@@ -78,84 +55,33 @@ func oTelKindToInstanaKind(otelKind trace.SpanKind) (string, bool) {
 	}
 }
 
-type Bundle struct {
-	Spans []Span `json:"spans,omitempty"`
-}
-
-type BatchInfo struct {
-	Size int `json:"s"`
-}
-
-type FromS struct {
-	EntityID string `json:"e"`
-	// Serverless agents fields
-	Hostless      bool   `json:"hl,omitempty"`
-	CloudProvider string `json:"cp,omitempty"`
-	// Host agent fields
-	HostID string `json:"h,omitempty"`
-}
-
-type TraceReference struct {
-	TraceID  string `json:"t"`
-	ParentID string `json:"p,omitempty"`
-}
-
-type OTelSpanData struct {
-	Kind           string            `json:"kind"`
-	HasTraceParent bool              `json:"tp,omitempty"`
-	ServiceName    string            `json:"service"`
-	Operation      string            `json:"operation"`
-	TraceState     string            `json:"trace_state,omitempty"`
-	Tags           map[string]string `json:"tags,omitempty"`
-}
-
-type Span struct {
-	TraceReference
-
-	SpanID          string          `json:"s"`
-	LongTraceID     string          `json:"lt,omitempty"`
-	Timestamp       uint64          `json:"ts"`
-	Duration        uint64          `json:"d"`
-	Name            string          `json:"n"`
-	From            *FromS          `json:"f"`
-	Batch           *BatchInfo      `json:"b,omitempty"`
-	Ec              int             `json:"ec,omitempty"`
-	Synthetic       bool            `json:"sy,omitempty"`
-	CorrelationType string          `json:"crtp,omitempty"`
-	CorrelationID   string          `json:"crid,omitempty"`
-	ForeignTrace    bool            `json:"tp,omitempty"`
-	Ancestor        *TraceReference `json:"ia,omitempty"`
-	Data            OTelSpanData    `json:"data,omitempty"`
-}
-
-func convertSpan(fromS FromS, otelSpan sdktrace.ReadOnlySpan, serviceName string /* attributes pcommon.Map */) (Span, error) {
+// convertSpan converts an OTel span into an Instana Span of type otel
+func convertSpan(otelSpan sdktrace.ReadOnlySpan, serviceName string) span {
 	traceId := convertTraceId(otelSpan.SpanContext().TraceID())
 
-	instanaSpan := Span{
+	instanaSpan := span{
 		Name:           OTEL_SPAN_TYPE,
-		TraceReference: TraceReference{},
+		traceReference: traceReference{},
 		Timestamp:      uint64(otelSpan.StartTime().UnixMilli()),
 		Duration:       uint64(otelSpan.EndTime().Sub(otelSpan.StartTime()).Milliseconds()),
-		Data: OTelSpanData{
+		Data: oTelSpanData{
 			Tags: make(map[string]string),
 		},
-		From: &fromS,
+		From: &fromS{
+			EntityID: strconv.Itoa(os.Getpid()),
+		},
 	}
 
-	if len(traceId) != 32 {
-		return Span{}, fmt.Errorf("failed parsing span, length of TraceId should be 32, but got %d", len(traceId))
-	}
-
-	instanaSpan.TraceReference.TraceID = traceId[16:32]
+	instanaSpan.traceReference.TraceID = traceId[16:32]
 	instanaSpan.LongTraceID = traceId
 
 	if otelSpan.Parent().SpanID().IsValid() {
-		instanaSpan.TraceReference.ParentID = convertSpanId(otelSpan.Parent().SpanID())
+		instanaSpan.traceReference.ParentID = convertSpanId(otelSpan.Parent().SpanID())
 	}
 
 	instanaSpan.SpanID = convertSpanId(otelSpan.SpanContext().SpanID())
 
-	kind, isEntry := oTelKindToInstanaKind(otelSpan.SpanKind())
+	kind, isEntry := convertKind(otelSpan.SpanKind())
 	instanaSpan.Data.Kind = kind
 
 	if otelSpan.Parent().SpanID().IsValid() && isEntry {
@@ -187,5 +113,5 @@ func convertSpan(fromS FromS, otelSpan sdktrace.ReadOnlySpan, serviceName string
 		instanaSpan.Ec = 1
 	}
 
-	return instanaSpan, nil
+	return instanaSpan
 }
