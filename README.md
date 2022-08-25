@@ -1,0 +1,2 @@
+# Instana Go OpenTelemetry Exporter
+
