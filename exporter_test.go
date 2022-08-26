@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -60,11 +61,13 @@ func TestExporter(t *testing.T) {
 
 	// In production ready environments, New() should be used
 	exporter := &InstanaExporter{
+		logger: newLogger(),
 		client: httpClient,
 	}
 
 	exporter.agentKey = "some hey"
 	exporter.endpointUrl = "http://valid.com"
+	os.Setenv("INSTANA_LOG_LEVEL", "info")
 
 	tp := initTracer(exporter)
 
@@ -96,6 +99,7 @@ func TestExporterNoEndpointURL(t *testing.T) {
 
 	// In production ready environments, New() should be used
 	exporter := &InstanaExporter{
+		logger: newLogger(),
 		client: httpClient,
 	}
 
@@ -125,48 +129,13 @@ func TestExporterNoEndpointURL(t *testing.T) {
 	}
 }
 
-// func TestExporterMalformedURL(t *testing.T) {
-// 	ctx := context.Background()
-// 	httpClient := newFakeHttpClient()
-
-// 	// In production ready environments, New() should be used
-// 	exporter := &InstanaExporter{
-// 		client: httpClient,
-// 	}
-
-// 	exporter.agentKey = "some hey"
-// 	exporter.endpointUrl = "invalid_url"
-
-// 	tp := initTracer(exporter)
-
-// 	defer func() {
-// 		if err := tp.Shutdown(ctx); err != nil {
-// 			t.Fatalf("shutdown error: %s", err)
-// 		}
-// 	}()
-
-// 	tracer := otel.Tracer("my-test02")
-// 	_, span := tracer.Start(ctx, "my_span", trace.WithSpanKind(trace.SpanKindServer))
-// 	time.Sleep(time.Millisecond * 400)
-// 	span.End()
-
-// 	tp.ForceFlush(ctx)
-
-// 	if exporter.err != nil {
-// 		t.Fatalf("exporter error: %s", exporter.err)
-// 	}
-
-// 	if httpClient.err != nil {
-// 		t.Fatalf("data upload error: %s", httpClient.err)
-// 	}
-// }
-
 func TestExporterNoAgentKey(t *testing.T) {
 	ctx := context.Background()
 	httpClient := newFakeHttpClient()
 
 	// In production ready environments, New() should be used
 	exporter := &InstanaExporter{
+		logger: newLogger(),
 		client: httpClient,
 	}
 
