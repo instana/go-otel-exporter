@@ -20,7 +20,7 @@ import (
 // * warn
 // * error
 func main() {
-	ch := make(chan bool)
+	ch := make(chan struct{})
 	// Acquire an instance of the Instana OTel Exporter
 	exporter := instana.New()
 
@@ -40,5 +40,4 @@ func main() {
 	span.End()
 
 	<-ch
-
 }

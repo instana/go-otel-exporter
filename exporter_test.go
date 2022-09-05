@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -45,9 +46,8 @@ func newFakeHttpClient() *FakeHttpClient {
 	return &FakeHttpClient{}
 }
 
-func newTestExporter(httpClient *FakeHttpClient) *InstanaExporter {
-	exporter := &InstanaExporter{
-		logger:     newLogger(),
+func newTestExporter(httpClient *FakeHttpClient) *Exporter {
+	exporter := &Exporter{
 		client:     httpClient,
 		shutdownCh: make(chan struct{}),
 	}
@@ -86,42 +86,8 @@ func TestExporter(t *testing.T) {
 	time.Sleep(time.Millisecond * 400)
 	span.End()
 
-	tp.ForceFlush(ctx)
-
-	if exporter.err != nil {
-		t.Fatalf("exporter error: %s", exporter.err)
-	}
-
-	if httpClient.err != nil {
-		t.Fatalf("data upload error: %s", httpClient.err)
-	}
-}
-
-func TestExporterNoEndpointURL(t *testing.T) {
-	ctx := context.Background()
-	httpClient := newFakeHttpClient()
-
-	exporter := newTestExporter(httpClient)
-
-	exporter.agentKey = "some hey"
-
-	tp := initTracer(exporter)
-
-	defer func() {
-		if err := tp.Shutdown(ctx); err != nil {
-			t.Fatalf("shutdown error: %s", err)
-		}
-	}()
-
-	tracer := otel.Tracer("my-test02")
-	_, span := tracer.Start(ctx, "my_span", trace.WithSpanKind(trace.SpanKindServer))
-	time.Sleep(time.Millisecond * 400)
-	span.End()
-
-	tp.ForceFlush(ctx)
-
-	if exporter.err == nil {
-		t.Fatal("expected exporter to throw an error about missing endpoint")
+	if err := tp.ForceFlush(ctx); err != nil {
+		t.Fatalf("exporter error: %s", err)
 	}
 
 	if httpClient.err != nil {
@@ -130,35 +96,29 @@ func TestExporterNoEndpointURL(t *testing.T) {
 }
 
 func TestExporterNoAgentKey(t *testing.T) {
-	ctx := context.Background()
-	httpClient := newFakeHttpClient()
-
-	exporter := newTestExporter(httpClient)
-
-	exporter.endpointUrl = "http://valid.com"
-
-	tp := initTracer(exporter)
+	os.Setenv("INSTANA_ENDPOINT_URL", "http://example.com")
+	defer os.Unsetenv("INSTANA_ENDPOINT_URL")
 
 	defer func() {
-		if err := tp.Shutdown(ctx); err != nil {
-			t.Fatalf("shutdown error: %s", err)
+		if r := recover(); r == nil {
+			t.Fatal("expected exporter to throw an error about missing agent key")
 		}
 	}()
 
-	tracer := otel.Tracer("my-test02")
-	_, span := tracer.Start(ctx, "my_span", trace.WithSpanKind(trace.SpanKindServer))
-	time.Sleep(time.Millisecond * 400)
-	span.End()
+	_ = New()
+}
 
-	tp.ForceFlush(ctx)
+func TestExporterNoEndpointUrl(t *testing.T) {
+	os.Setenv("INSTANA_AGENT_KEY", "some_key")
+	defer os.Unsetenv("INSTANA_AGENT_KEY")
 
-	if exporter.err == nil {
-		t.Fatal("expected exporter to throw an error about missing agent key")
-	}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected exporter to throw an error about missing the endpoint URL")
+		}
+	}()
 
-	if httpClient.err != nil {
-		t.Fatalf("data upload error: %s", httpClient.err)
-	}
+	_ = New()
 }
 
 func TestExporterCancelledContext(t *testing.T) {
@@ -174,21 +134,15 @@ func TestExporterCancelledContext(t *testing.T) {
 
 	tp := initTracer(exporter)
 
-	defer func() {
-		if err := tp.Shutdown(ctx); err == nil {
-			t.Fatal("expected shotdown to throw a 'context deadline exceeded' error")
-		}
-	}()
-
 	tracer := otel.Tracer("my-test01")
 	_, span := tracer.Start(ctx, "my_span", trace.WithSpanKind(trace.SpanKindServer))
 	time.Sleep(time.Millisecond * 400)
 	span.End()
 
-	tp.ForceFlush(ctx)
+	err := tp.ForceFlush(ctx)
 
-	if exporter.err != nil {
-		t.Fatalf("exporter error: %s", exporter.err)
+	if err == nil {
+		t.Fatal("expected shutdown to throw a 'context deadline exceeded' error")
 	}
 
 	if httpClient.err != nil {

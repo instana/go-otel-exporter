@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,25 +13,21 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-var _ sdktrace.SpanExporter = (*InstanaExporter)(nil)
+var _ sdktrace.SpanExporter = (*Exporter)(nil)
 
 type instanaHttpClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// The InstanaExporter implements the OTel `sdktrace.SpanExporter` interface and it's responsible for converting otlp spans
+// The Exporter implements the OTel `sdktrace.SpanExporter` interface and it's responsible for converting otlp spans
 // into Instana spans and upload them to the Instana backend.
-type InstanaExporter struct {
+type Exporter struct {
 	// An interface that implements Do. It's supposed to use http.Client, but the interface is used for tests.
 	client instanaHttpClient
 	// The serverless acceptor endpoint URL.
 	endpointUrl string
 	// The agent key.
 	agentKey string
-	// An error should be set here in case the ExportSpans method returns an error.
-	err error
-	// The logger utility
-	logger *Logger
 	// Ensures that shutdownCh is closed only once
 	shutdownOnce sync.Once
 	// A channel used to notify that the exporter was shutdown
@@ -41,25 +36,29 @@ type InstanaExporter struct {
 	mu sync.Mutex
 }
 
-// New returns an instance of InstanaExporter
-func New() *InstanaExporter {
-	return &InstanaExporter{
+// New returns an instance of instana.Exporter
+func New() *Exporter {
+	var eurl, akey string
+	var ok bool
+
+	if eurl, ok = os.LookupEnv("INSTANA_ENDPOINT_URL"); !ok {
+		panic("The environment variable 'INSTANA_ENDPOINT_URL' is not set")
+	}
+
+	if akey, ok = os.LookupEnv("INSTANA_AGENT_KEY"); !ok {
+		panic("The environment variable 'INSTANA_AGENT_KEY' is not set")
+	}
+
+	return &Exporter{
 		client:      http.DefaultClient,
-		endpointUrl: os.Getenv("INSTANA_ENDPOINT_URL"),
-		agentKey:    os.Getenv("INSTANA_AGENT_KEY"),
-		logger:      newLogger(),
+		endpointUrl: eurl,
+		agentKey:    akey,
 		shutdownCh:  make(chan struct{}),
 	}
 }
 
-// handleErrors sets InstanaExporter.err and returns the error itself
-func (e *InstanaExporter) handleError(err error) error {
-	e.mu.Lock()
-	e.err = err
-	e.mu.Unlock()
-
-	e.logger.error(err)
-
+// handleErrors sets Exporter.err and returns the error itself
+func (e *Exporter) handleError(err error) error {
 	return err
 }
 
@@ -74,13 +73,10 @@ func (e *InstanaExporter) handleError(err error) error {
 // calls this function will not implement any retry logic. All errors
 // returned by this function are considered unrecoverable and will be
 // reported to a configured error Handler.
-func (e *InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
-	e.logger.info("ExportSpans called!")
-
+func (e *Exporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	select {
 	case <-ctx.Done():
 		err := ctx.Err()
-		e.logger.error("Export failed due to context error:", err)
 		return err
 	case <-e.shutdownCh:
 		return nil
@@ -91,26 +87,17 @@ func (e *InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.Read
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithCancel(ctx)
 	defer cancel()
+
 	go func(ctx context.Context, cancel context.CancelFunc) {
 		select {
 		case <-ctx.Done():
 		case <-e.shutdownCh:
-			e.logger.info("context was cancelled")
 			cancel()
 		}
 	}(ctx, cancel)
 
 	if len(spans) == 0 {
-		e.logger.info("No spans to export")
 		return nil
-	}
-
-	if e.endpointUrl == "" {
-		return e.handleError(errors.New("the endpoint URL cannot be empty"))
-	}
-
-	if e.agentKey == "" {
-		return e.handleError(errors.New("the agent key cannot be empty"))
 	}
 
 	instanaSpans := make([]span, len(spans))
@@ -156,11 +143,9 @@ func (e *InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.Read
 		return e.handleError(fmt.Errorf("failed to make an HTTP request: %w", err))
 	}
 
+	// check backend code and see all http codes returned by it
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 		// Request is successful.
-		buf := bytes.Buffer{}
-		json.Indent(&buf, jsonData, "", "  ")
-		e.logger.info(string(buf.Bytes()))
 		return nil
 	}
 
@@ -171,18 +156,14 @@ func (e *InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.Read
 // exporter is expected to preform any cleanup or synchronization it
 // requires while honoring all timeouts and cancellations contained in
 // the passed context.
-func (e *InstanaExporter) Shutdown(ctx context.Context) error {
-	e.logger.info("The exporter is shutting down.")
-
+func (e *Exporter) Shutdown(ctx context.Context) error {
 	e.shutdownOnce.Do(func() {
-		e.logger.info("Notifying the exporter to stop accepting spans")
 		close(e.shutdownCh)
 	})
 
 	select {
 	case <-ctx.Done():
 		err := ctx.Err()
-		e.logger.error("Exporter shutting down with error from context:", err)
 
 		return err
 	default:

@@ -1,7 +1,6 @@
 package instana
 
 import (
-	"encoding/hex"
 	"os"
 	"strconv"
 
@@ -11,45 +10,35 @@ import (
 )
 
 const (
-	OTEL_SPAN_TYPE = "otel"
+	otelSpanType = "otel"
 
-	INSTANA_SPAN_KIND_SERVER   = "server"
-	INSTANA_SPAN_KIND_CLIENT   = "client"
-	INSTANA_SPAN_KIND_PRODUCER = "producer"
-	INSTANA_SPAN_KIND_CONSUMER = "consumer"
-	INSTANA_SPAN_KIND_INTERNAL = "internal"
+	spanKindServer   = "server"
+	spanKindClient   = "client"
+	spanKindProduce  = "producer"
+	spanKindConsumer = "consumer"
+	spanKindInternal = "internal"
 
-	INSTANA_DATA_SERVICE      = "service"
-	INSTANA_DATA_OPERATION    = "operation"
-	INSTANA_DATA_TRACE_STATE  = "trace_state"
-	INSTANA_DATA_ERROR        = "error"
-	INSTANA_DATA_ERROR_DETAIL = "error_detail"
+	dataService     = "service"
+	dataOperation   = "operation"
+	dataTraceState  = "trace_state"
+	dataError       = "error"
+	dataErrorDetail = "error_detail"
 )
-
-// convertTraceId converts a [16]byte trace id into a hex string
-func convertTraceId(traceId trace.TraceID) string {
-	return hex.EncodeToString(traceId[:])
-}
-
-// convertTraceId converts a [8]byte span id into a hex string
-func convertSpanId(spanId trace.SpanID) string {
-	return hex.EncodeToString(spanId[:])
-}
 
 // convertKind converts an int based OTel span into a string based Instana span.
 // It returns the span kind as a string and a boolean indicating if it's an entry span
 func convertKind(otelKind trace.SpanKind) (string, bool) {
 	switch otelKind {
 	case trace.SpanKindServer:
-		return INSTANA_SPAN_KIND_SERVER, true
+		return spanKindServer, true
 	case trace.SpanKindClient:
-		return INSTANA_SPAN_KIND_CLIENT, false
+		return spanKindClient, false
 	case trace.SpanKindProducer:
-		return INSTANA_SPAN_KIND_PRODUCER, false
+		return spanKindProduce, false
 	case trace.SpanKindConsumer:
-		return INSTANA_SPAN_KIND_CONSUMER, true
+		return spanKindConsumer, true
 	case trace.SpanKindInternal:
-		return INSTANA_SPAN_KIND_INTERNAL, false
+		return spanKindInternal, false
 	default:
 		return "unknown", false
 	}
@@ -57,10 +46,10 @@ func convertKind(otelKind trace.SpanKind) (string, bool) {
 
 // convertSpan converts an OTel span into an Instana Span of type otel
 func convertSpan(otelSpan sdktrace.ReadOnlySpan, serviceName string) span {
-	traceId := convertTraceId(otelSpan.SpanContext().TraceID())
+	traceId := otelSpan.SpanContext().TraceID().String()
 
 	instanaSpan := span{
-		Name:           OTEL_SPAN_TYPE,
+		Name:           otelSpanType,
 		traceReference: traceReference{},
 		Timestamp:      uint64(otelSpan.StartTime().UnixMilli()),
 		Duration:       uint64(otelSpan.EndTime().Sub(otelSpan.StartTime()).Milliseconds()),
@@ -76,10 +65,10 @@ func convertSpan(otelSpan sdktrace.ReadOnlySpan, serviceName string) span {
 	instanaSpan.LongTraceID = traceId
 
 	if otelSpan.Parent().SpanID().IsValid() {
-		instanaSpan.traceReference.ParentID = convertSpanId(otelSpan.Parent().SpanID())
+		instanaSpan.traceReference.ParentID = otelSpan.Parent().SpanID().String()
 	}
 
-	instanaSpan.SpanID = convertSpanId(otelSpan.SpanContext().SpanID())
+	instanaSpan.SpanID = otelSpan.SpanContext().SpanID().String()
 
 	kind, isEntry := convertKind(otelSpan.SpanKind())
 	instanaSpan.Data.Kind = kind
@@ -102,15 +91,10 @@ func convertSpan(otelSpan sdktrace.ReadOnlySpan, serviceName string) span {
 		instanaSpan.Data.Tags[string(attr.Key)] = attr.Value.AsString()
 	}
 
-	errornous := false
 	if otelSpan.Status().Code == codes.Error {
-		errornous = true
-		instanaSpan.Data.Tags[INSTANA_DATA_ERROR] = otelSpan.Status().Code.String()
-		instanaSpan.Data.Tags[INSTANA_DATA_ERROR_DETAIL] = otelSpan.Status().Description
-	}
-
-	if errornous {
 		instanaSpan.Ec = 1
+		instanaSpan.Data.Tags[dataError] = otelSpan.Status().Code.String()
+		instanaSpan.Data.Tags[dataErrorDetail] = otelSpan.Status().Description
 	}
 
 	return instanaSpan
