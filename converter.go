@@ -18,9 +18,6 @@ const (
 	spanKindConsumer = "consumer"
 	spanKindInternal = "internal"
 
-	dataService     = "service"
-	dataOperation   = "operation"
-	dataTraceState  = "trace_state"
 	dataError       = "error"
 	dataErrorDetail = "error_detail"
 )

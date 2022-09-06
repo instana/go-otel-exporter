@@ -18,11 +18,13 @@ import (
 )
 
 type FakeHttpClient struct {
-	err         error
-	requestData string
+	err          error
+	requestData  string
+	requestCount int
 }
 
 func (c *FakeHttpClient) Do(req *http.Request) (*http.Response, error) {
+	c.requestCount++
 	data, err := io.ReadAll(req.Body)
 	defer req.Body.Close()
 
@@ -32,9 +34,11 @@ func (c *FakeHttpClient) Do(req *http.Request) (*http.Response, error) {
 	}
 
 	buf := bytes.Buffer{}
-	json.Indent(&buf, data, "", "  ")
+	if err = json.Indent(&buf, data, "", "  "); err != nil {
+		return nil, err
+	}
 
-	c.requestData = string(buf.Bytes())
+	c.requestData = buf.String()
 
 	res := &http.Response{
 		StatusCode: 200,
@@ -64,13 +68,13 @@ func initTracer(exporter sdktrace.SpanExporter) *sdktrace.TracerProvider {
 	return tracerProvider
 }
 
-func TestExporter(t *testing.T) {
+func Test_Success(t *testing.T) {
 	ctx := context.Background()
 	httpClient := newFakeHttpClient()
 
 	exporter := newTestExporter(httpClient)
 
-	exporter.agentKey = "some hey"
+	exporter.agentKey = "some key"
 	exporter.endpointUrl = "http://valid.com"
 
 	tp := initTracer(exporter)
@@ -90,12 +94,16 @@ func TestExporter(t *testing.T) {
 		t.Fatalf("exporter error: %s", err)
 	}
 
+	if httpClient.requestCount != 1 {
+		t.Fatalf("expected HTTP request count to be 1 but receveived %d", httpClient.requestCount)
+	}
+
 	if httpClient.err != nil {
 		t.Fatalf("data upload error: %s", httpClient.err)
 	}
 }
 
-func TestExporterNoAgentKey(t *testing.T) {
+func Test_No_Agent_Key(t *testing.T) {
 	os.Setenv("INSTANA_ENDPOINT_URL", "http://example.com")
 	defer os.Unsetenv("INSTANA_ENDPOINT_URL")
 
@@ -108,7 +116,7 @@ func TestExporterNoAgentKey(t *testing.T) {
 	_ = New()
 }
 
-func TestExporterNoEndpointUrl(t *testing.T) {
+func Test_No_Endpoint_URL(t *testing.T) {
 	os.Setenv("INSTANA_AGENT_KEY", "some_key")
 	defer os.Unsetenv("INSTANA_AGENT_KEY")
 
@@ -121,12 +129,11 @@ func TestExporterNoEndpointUrl(t *testing.T) {
 	_ = New()
 }
 
-func TestExporterCancelledContext(t *testing.T) {
+func Test_Cancelled_Context(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
 
 	httpClient := newFakeHttpClient()
-
 	exporter := newTestExporter(httpClient)
 
 	exporter.agentKey = "some hey"
@@ -145,13 +152,17 @@ func TestExporterCancelledContext(t *testing.T) {
 		t.Fatal("expected shutdown to throw a 'context deadline exceeded' error")
 	}
 
+	if httpClient.requestCount != 0 {
+		t.Fatalf("expected HTTP request count to be 0 but receveived %d", httpClient.requestCount)
+	}
+
 	if httpClient.err != nil {
 		t.Fatalf("data upload error: %s", httpClient.err)
 	}
 }
 
 // Make sure to run go test with the -race flag to cover this test
-func TestExporterRaceCondition(t *testing.T) {
+func Test_Race_Condition(t *testing.T) {
 	ctx := context.Background()
 	httpClient := newFakeHttpClient()
 	exporter := newTestExporter(httpClient)
@@ -167,11 +178,15 @@ func TestExporterRaceCondition(t *testing.T) {
 	wg.Add(1)
 
 	go func() {
-		exporter.Shutdown(ctx)
+		_ = exporter.Shutdown(ctx)
 		wg.Done()
 	}()
 
 	tp.ForceFlush(ctx)
 
 	wg.Wait()
+
+	if httpClient.requestCount != 0 {
+		t.Fatalf("expected HTTP request count to be 0 but receveived %d", httpClient.requestCount)
+	}
 }
