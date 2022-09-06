@@ -30,11 +30,6 @@ import (
 // Make sure to provide the required environment variables before run the application:
 // * INSTANA_ENDPOINT_URL
 // * INSTANA_AGENT_KEY
-// You can also use the INSTANA_LOG_LEVEL environment variable to set the log level. Available options are:
-// * debug
-// * info
-// * warn
-// * error
 func main() {
 	ch := make(chan bool)
 	// Acquire an instance of the Instana OTel Exporter

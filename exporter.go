@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -28,12 +28,8 @@ type Exporter struct {
 	endpointUrl string
 	// The agent key.
 	agentKey string
-	// Ensures that shutdownCh is closed only once
-	shutdownOnce sync.Once
-	// A channel used to notify that the exporter was shutdown
-	shutdownCh chan struct{}
-	// Used to make shared attributes synchronous when they are set
-	mu sync.Mutex
+	// State that controls whether the exporter has been shut down or not.
+	shutdown atomic.Value
 }
 
 // New returns an instance of instana.Exporter
@@ -53,13 +49,7 @@ func New() *Exporter {
 		client:      http.DefaultClient,
 		endpointUrl: eurl,
 		agentKey:    akey,
-		shutdownCh:  make(chan struct{}),
 	}
-}
-
-// handleErrors sets Exporter.err and returns the error itself
-func (e *Exporter) handleError(err error) error {
-	return err
 }
 
 // ExportSpans exports a batch of spans.
@@ -74,12 +64,14 @@ func (e *Exporter) handleError(err error) error {
 // returned by this function are considered unrecoverable and will be
 // reported to a configured error Handler.
 func (e *Exporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	if isShutdown, ok := e.shutdown.Load().(bool); ok && isShutdown {
+		return nil
+	}
+
 	select {
 	case <-ctx.Done():
 		err := ctx.Err()
 		return err
-	case <-e.shutdownCh:
-		return nil
 	default:
 	}
 
@@ -87,14 +79,6 @@ func (e *Exporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpa
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithCancel(ctx)
 	defer cancel()
-
-	go func(ctx context.Context, cancel context.CancelFunc) {
-		select {
-		case <-ctx.Done():
-		case <-e.shutdownCh:
-			cancel()
-		}
-	}(ctx, cancel)
 
 	if len(spans) == 0 {
 		return nil
@@ -120,14 +104,14 @@ func (e *Exporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpa
 	jsonData, err := json.Marshal(bundle)
 
 	if err != nil {
-		return e.handleError(err)
+		return err
 	}
 
 	url := strings.TrimSuffix(e.endpointUrl, "/") + "/bundle"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonData))
 	if err != nil {
-		return e.handleError(fmt.Errorf("error setting http request: %w", err))
+		return fmt.Errorf("error setting http request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -140,7 +124,7 @@ func (e *Exporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpa
 	resp, err := e.client.Do(req)
 
 	if err != nil {
-		return e.handleError(fmt.Errorf("failed to make an HTTP request: %w", err))
+		return fmt.Errorf("failed to make an HTTP request: %w", err)
 	}
 
 	// check backend code and see all http codes returned by it
@@ -149,7 +133,7 @@ func (e *Exporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpa
 		return nil
 	}
 
-	return e.handleError(fmt.Errorf("failed to send spans to the backend. error: %s", resp.Status))
+	return fmt.Errorf("failed to send spans to the backend. error: %s", resp.Status)
 }
 
 // Shutdown notifies the exporter of a pending halt to operations. The
@@ -157,9 +141,7 @@ func (e *Exporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpa
 // requires while honoring all timeouts and cancellations contained in
 // the passed context.
 func (e *Exporter) Shutdown(ctx context.Context) error {
-	e.shutdownOnce.Do(func() {
-		close(e.shutdownCh)
-	})
+	e.shutdown.Store(true)
 
 	select {
 	case <-ctx.Done():

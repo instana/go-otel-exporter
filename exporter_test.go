@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,8 +49,7 @@ func newFakeHttpClient() *FakeHttpClient {
 
 func newTestExporter(httpClient *FakeHttpClient) *Exporter {
 	exporter := &Exporter{
-		client:     httpClient,
-		shutdownCh: make(chan struct{}),
+		client: httpClient,
 	}
 
 	return exporter
@@ -136,7 +136,7 @@ func TestExporterCancelledContext(t *testing.T) {
 
 	tracer := otel.Tracer("my-test01")
 	_, span := tracer.Start(ctx, "my_span", trace.WithSpanKind(trace.SpanKindServer))
-	time.Sleep(time.Millisecond * 400)
+	time.Sleep(time.Millisecond * 200)
 	span.End()
 
 	err := tp.ForceFlush(ctx)
@@ -148,4 +148,30 @@ func TestExporterCancelledContext(t *testing.T) {
 	if httpClient.err != nil {
 		t.Fatalf("data upload error: %s", httpClient.err)
 	}
+}
+
+// Make sure to run go test with the -race flag to cover this test
+func TestExporterRaceCondition(t *testing.T) {
+	ctx := context.Background()
+	httpClient := newFakeHttpClient()
+	exporter := newTestExporter(httpClient)
+
+	tp := initTracer(exporter)
+
+	tracer := otel.Tracer("my-test01")
+	_, span := tracer.Start(ctx, "my_span", trace.WithSpanKind(trace.SpanKindServer))
+	time.Sleep(time.Millisecond * 100)
+	span.End()
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+
+	go func() {
+		exporter.Shutdown(ctx)
+		wg.Done()
+	}()
+
+	tp.ForceFlush(ctx)
+
+	wg.Wait()
 }
