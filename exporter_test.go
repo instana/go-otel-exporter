@@ -185,8 +185,4 @@ func Test_Race_Condition(t *testing.T) {
 	tp.ForceFlush(ctx)
 
 	wg.Wait()
-
-	if httpClient.requestCount != 0 {
-		t.Fatalf("expected HTTP request count to be 0 but receveived %d", httpClient.requestCount)
-	}
 }
