@@ -45,10 +45,14 @@ func New() *Exporter {
 		panic("The environment variable 'INSTANA_AGENT_KEY' is not set")
 	}
 
+	shutdown := atomic.Value{}
+	shutdown.Store(false)
+
 	return &Exporter{
 		client:      http.DefaultClient,
 		endpointUrl: eurl,
 		agentKey:    akey,
+		shutdown:    shutdown,
 	}
 }
 
@@ -64,7 +68,9 @@ func New() *Exporter {
 // returned by this function are considered unrecoverable and will be
 // reported to a configured error Handler.
 func (e *Exporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
-	if isShutdown, ok := e.shutdown.Load().(bool); ok && isShutdown {
+	if isShutdown, ok := e.shutdown.Load().(bool); !ok {
+		return fmt.Errorf("shutdown state is not a boolean")
+	} else if isShutdown {
 		return nil
 	}
 
