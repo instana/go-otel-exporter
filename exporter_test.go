@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,8 +53,12 @@ func newFakeHttpClient() *FakeHttpClient {
 }
 
 func newTestExporter(httpClient *FakeHttpClient) *Exporter {
+	sd := atomic.Value{}
+	sd.Store(false)
+
 	exporter := &Exporter{
-		client: httpClient,
+		client:   httpClient,
+		shutdown: sd,
 	}
 
 	return exporter
