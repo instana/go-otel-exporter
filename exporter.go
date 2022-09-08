@@ -4,63 +4,56 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-var _ sdktrace.SpanExporter = (*InstanaExporter)(nil)
+var _ sdktrace.SpanExporter = (*Exporter)(nil)
 
 type instanaHttpClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// The InstanaExporter implements the OTel `sdktrace.SpanExporter` interface and it's responsible for converting otlp spans
+// The Exporter implements the OTel `sdktrace.SpanExporter` interface and it's responsible for converting otlp spans
 // into Instana spans and upload them to the Instana backend.
-type InstanaExporter struct {
+type Exporter struct {
 	// An interface that implements Do. It's supposed to use http.Client, but the interface is used for tests.
 	client instanaHttpClient
 	// The serverless acceptor endpoint URL.
 	endpointUrl string
 	// The agent key.
 	agentKey string
-	// An error should be set here in case the ExportSpans method returns an error.
-	err error
-	// The logger utility
-	logger *Logger
-	// Ensures that shutdownCh is closed only once
-	shutdownOnce sync.Once
-	// A channel used to notify that the exporter was shutdown
-	shutdownCh chan struct{}
-	// Used to make shared attributes synchronous when they are set
-	mu sync.Mutex
+	// State that controls whether the exporter has been shut down or not.
+	shutdown atomic.Value
 }
 
-// New returns an instance of InstanaExporter
-func New() *InstanaExporter {
-	return &InstanaExporter{
-		client:      http.DefaultClient,
-		endpointUrl: os.Getenv("INSTANA_ENDPOINT_URL"),
-		agentKey:    os.Getenv("INSTANA_AGENT_KEY"),
-		logger:      newLogger(),
-		shutdownCh:  make(chan struct{}),
+// New returns an instance of instana.Exporter
+func New() *Exporter {
+	var eurl, akey string
+	var ok bool
+
+	if eurl, ok = os.LookupEnv("INSTANA_ENDPOINT_URL"); !ok {
+		panic("The environment variable 'INSTANA_ENDPOINT_URL' is not set")
 	}
-}
 
-// handleErrors sets InstanaExporter.err and returns the error itself
-func (e *InstanaExporter) handleError(err error) error {
-	e.mu.Lock()
-	e.err = err
-	e.mu.Unlock()
+	if akey, ok = os.LookupEnv("INSTANA_AGENT_KEY"); !ok {
+		panic("The environment variable 'INSTANA_AGENT_KEY' is not set")
+	}
 
-	e.logger.error(err)
+	shutdown := atomic.Value{}
+	shutdown.Store(false)
 
-	return err
+	return &Exporter{
+		client:      http.DefaultClient,
+		endpointUrl: eurl,
+		agentKey:    akey,
+		shutdown:    shutdown,
+	}
 }
 
 // ExportSpans exports a batch of spans.
@@ -74,16 +67,17 @@ func (e *InstanaExporter) handleError(err error) error {
 // calls this function will not implement any retry logic. All errors
 // returned by this function are considered unrecoverable and will be
 // reported to a configured error Handler.
-func (e *InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
-	e.logger.info("ExportSpans called!")
+func (e *Exporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	if isShutdown, ok := e.shutdown.Load().(bool); !ok {
+		return fmt.Errorf("shutdown state is not a boolean")
+	} else if isShutdown {
+		return nil
+	}
 
 	select {
 	case <-ctx.Done():
 		err := ctx.Err()
-		e.logger.error("Export failed due to context error:", err)
 		return err
-	case <-e.shutdownCh:
-		return nil
 	default:
 	}
 
@@ -91,26 +85,9 @@ func (e *InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.Read
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithCancel(ctx)
 	defer cancel()
-	go func(ctx context.Context, cancel context.CancelFunc) {
-		select {
-		case <-ctx.Done():
-		case <-e.shutdownCh:
-			e.logger.info("context was cancelled")
-			cancel()
-		}
-	}(ctx, cancel)
 
 	if len(spans) == 0 {
-		e.logger.info("No spans to export")
 		return nil
-	}
-
-	if e.endpointUrl == "" {
-		return e.handleError(errors.New("the endpoint URL cannot be empty"))
-	}
-
-	if e.agentKey == "" {
-		return e.handleError(errors.New("the agent key cannot be empty"))
 	}
 
 	instanaSpans := make([]span, len(spans))
@@ -133,14 +110,14 @@ func (e *InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.Read
 	jsonData, err := json.Marshal(bundle)
 
 	if err != nil {
-		return e.handleError(err)
+		return err
 	}
 
 	url := strings.TrimSuffix(e.endpointUrl, "/") + "/bundle"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonData))
 	if err != nil {
-		return e.handleError(fmt.Errorf("error setting http request: %w", err))
+		return fmt.Errorf("error setting http request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -153,36 +130,28 @@ func (e *InstanaExporter) ExportSpans(ctx context.Context, spans []sdktrace.Read
 	resp, err := e.client.Do(req)
 
 	if err != nil {
-		return e.handleError(fmt.Errorf("failed to make an HTTP request: %w", err))
+		return fmt.Errorf("failed to make an HTTP request: %w", err)
 	}
 
+	// check backend code and see all http codes returned by it
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 		// Request is successful.
-		buf := bytes.Buffer{}
-		json.Indent(&buf, jsonData, "", "  ")
-		e.logger.info(string(buf.Bytes()))
 		return nil
 	}
 
-	return e.handleError(fmt.Errorf("failed to send spans to the backend. error: %s", resp.Status))
+	return fmt.Errorf("failed to send spans to the backend. error: %s", resp.Status)
 }
 
 // Shutdown notifies the exporter of a pending halt to operations. The
 // exporter is expected to preform any cleanup or synchronization it
 // requires while honoring all timeouts and cancellations contained in
 // the passed context.
-func (e *InstanaExporter) Shutdown(ctx context.Context) error {
-	e.logger.info("The exporter is shutting down.")
-
-	e.shutdownOnce.Do(func() {
-		e.logger.info("Notifying the exporter to stop accepting spans")
-		close(e.shutdownCh)
-	})
+func (e *Exporter) Shutdown(ctx context.Context) error {
+	e.shutdown.Store(true)
 
 	select {
 	case <-ctx.Done():
 		err := ctx.Err()
-		e.logger.error("Exporter shutting down with error from context:", err)
 
 		return err
 	default:
