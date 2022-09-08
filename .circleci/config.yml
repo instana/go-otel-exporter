@@ -26,7 +26,7 @@ jobs:
             - "/go/pkg/mod"
       - run:
           name: Run lint
-          command: golangci-lint
+          command: golangci-lint run
       - run:
           name: Run tests
           command: go test -race -count 75 ./...
