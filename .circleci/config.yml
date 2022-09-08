@@ -29,6 +29,7 @@ jobs:
           command: golangci-lint
       - run:
           name: Run tests
+          # Running the test 50 times in CI seems to be enough. In local machines it is safer to check 100 times.
           command: go test -race -count 50 ./...
 
 workflows:

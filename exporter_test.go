@@ -21,11 +21,19 @@ import (
 type FakeHttpClient struct {
 	err          error
 	requestData  string
-	requestCount int
+	requestCount atomic.Value
 }
 
 func (c *FakeHttpClient) Do(req *http.Request) (*http.Response, error) {
-	c.requestCount++
+	var rc int
+	var ok bool
+
+	if rc, ok = c.requestCount.Load().(int); !ok {
+		panic("FakeHttpClient.requestCount should be of type int")
+	}
+
+	c.requestCount.Store(rc + 1)
+
 	data, err := io.ReadAll(req.Body)
 	defer req.Body.Close()
 
@@ -49,7 +57,12 @@ func (c *FakeHttpClient) Do(req *http.Request) (*http.Response, error) {
 }
 
 func newFakeHttpClient() *FakeHttpClient {
-	return &FakeHttpClient{}
+	rc := atomic.Value{}
+	rc.Store(0)
+
+	return &FakeHttpClient{
+		requestCount: rc,
+	}
 }
 
 func newTestExporter(httpClient *FakeHttpClient) *Exporter {
@@ -99,8 +112,15 @@ func Test_Success(t *testing.T) {
 		t.Fatalf("exporter error: %s", err)
 	}
 
-	if httpClient.requestCount != 1 {
-		t.Fatalf("expected HTTP request count to be 1 but receveived %d", httpClient.requestCount)
+	var rc int
+	var ok bool
+
+	if rc, ok = httpClient.requestCount.Load().(int); !ok {
+		t.Fatal("Expected httpClient.requestCount to be of type int")
+	}
+
+	if rc != 1 {
+		t.Fatalf("expected HTTP request count to be 1 but receveived %d", rc)
 	}
 
 	if httpClient.err != nil {
@@ -157,8 +177,15 @@ func Test_Cancelled_Context(t *testing.T) {
 		t.Fatal("expected shutdown to throw a 'context deadline exceeded' error")
 	}
 
-	if httpClient.requestCount != 0 {
-		t.Fatalf("expected HTTP request count to be 0 but receveived %d", httpClient.requestCount)
+	var rc int
+	var ok bool
+
+	if rc, ok = httpClient.requestCount.Load().(int); !ok {
+		t.Fatal("Expected httpClient.requestCount to be of type int")
+	}
+
+	if rc != 0 {
+		t.Fatalf("expected HTTP request count to be 0 but receveived %d", rc)
 	}
 
 	if httpClient.err != nil {
