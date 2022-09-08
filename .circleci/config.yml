@@ -25,8 +25,11 @@ jobs:
           paths:
             - "/go/pkg/mod"
       - run:
+          name: Run lint
+          command: golangci-lint
+      - run:
           name: Run tests
-          command: golangci-lint run && go test -race -v ./...
+          command: go test -race -count 50 ./...
 
 workflows:
   build:

@@ -92,7 +92,7 @@ func Test_Success(t *testing.T) {
 
 	tracer := otel.Tracer("my-test01")
 	_, span := tracer.Start(ctx, "my_span", trace.WithSpanKind(trace.SpanKindServer))
-	time.Sleep(time.Millisecond * 400)
+	time.Sleep(time.Millisecond * 50)
 	span.End()
 
 	if err := tp.ForceFlush(ctx); err != nil {
@@ -148,7 +148,7 @@ func Test_Cancelled_Context(t *testing.T) {
 
 	tracer := otel.Tracer("my-test01")
 	_, span := tracer.Start(ctx, "my_span", trace.WithSpanKind(trace.SpanKindServer))
-	time.Sleep(time.Millisecond * 200)
+	time.Sleep(time.Millisecond * 50)
 	span.End()
 
 	err := tp.ForceFlush(ctx)
@@ -176,7 +176,7 @@ func Test_Race_Condition(t *testing.T) {
 
 	tracer := otel.Tracer("my-test01")
 	_, span := tracer.Start(ctx, "my_span", trace.WithSpanKind(trace.SpanKindServer))
-	time.Sleep(time.Millisecond * 100)
+	time.Sleep(time.Millisecond * 50)
 	span.End()
 
 	wg := sync.WaitGroup{}
